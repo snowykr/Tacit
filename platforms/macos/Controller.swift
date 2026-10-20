@@ -66,10 +66,12 @@ class TacitController: IMKInputController {
     }
 
     /// The text before the caret, ending with the word being composed (which is marked text).
-    private func textBeforeCaret(_ client: IMKTextInput) -> String {
+    private func textBeforeCaret(_ client: IMKTextInput) -> String? {
+        // Document access is optional. NULL context tells the bridge to use its own composition;
+        // an empty string instead would falsely tell it that the user moved to an empty field.
+        guard client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) else { return nil }
         let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
-        guard let range = context.range, range.length > 0 else { return "" }
-        return client.attributedSubstring(from: range)?.string ?? ""
+        return context.read { client.attributedSubstring(from: $0)?.string }
     }
 
     /// Plays the commands the engine returned and says whether it consumed the key.

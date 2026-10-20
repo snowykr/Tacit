@@ -1,4 +1,4 @@
-//! Platform-neutral input bridge: keys and text before the caret in, edit commands out.
+//! Platform-neutral input bridge: keys and optional text before the caret in, edit commands out.
 //!
 //! The commands are one string: `1` if the key was consumed (else `0`), then each command
 //! preceded by `\u{1}`: `M<text>` set the composing text, `I<text>` commit it (replacing the
@@ -125,19 +125,28 @@ impl Ime {
 
     fn run(
         &mut self,
-        before: &str,
+        before: Option<&str>,
         f: impl FnOnce(&mut InputSession, &mut Recorder) -> bool,
     ) -> String {
-        if !before.ends_with(&self.composing) {
-            self.reset(); // the caret moved away from the word: the app ended the composition
-        }
+        let before = match before {
+            Some(before) => {
+                if !before.ends_with(&self.composing) {
+                    // The caret moved away from the word: the app ended the composition.
+                    self.reset();
+                }
+                before
+            }
+            None => &self.composing,
+        };
         let mut rec = Recorder::new(before, &self.composing);
         let consumed = f(&mut self.session, &mut rec);
         self.composing = rec.composing();
         rec.render(consumed)
     }
 
-    pub fn key(&mut self, kind: i32, ch: char, before: &str) -> String {
+    /// `Some(before)` is authoritative, including `Some("")`; `None` retains only this
+    /// bridge's composition, not external text or committed history.
+    pub fn key(&mut self, kind: i32, ch: char, before: Option<&str>) -> String {
         self.run(before, |s, c| s.handle(key_for(kind, ch), c))
     }
 
@@ -147,8 +156,9 @@ impl Ime {
         self.composing.clear();
     }
 
-    /// Pauses or resumes tacit in this text field.
-    pub fn toggle_pause(&mut self, before: &str) -> String {
+    /// Pauses or resumes tacit in this text field, using the same optional-context contract as
+    /// `key`.
+    pub fn toggle_pause(&mut self, before: Option<&str>) -> String {
         self.run(before, |s, c| {
             s.toggle_pause(c);
             true

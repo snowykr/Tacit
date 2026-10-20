@@ -1,6 +1,6 @@
 //! C interface of the input method, for the macOS and Linux text services. Same contract as the
-//! core bridge (`tacit_core::session::bridge`): a key and the text before the caret go in, a
-//! string comes out — `1` if the key was consumed (else `0`), then each command preceded by
+//! core bridge (`tacit_core::session::bridge`): a key and optional text before the caret go in,
+//! a string comes out — `1` if the key was consumed (else `0`), then each command preceded by
 //! `\u{1}`: `M<text>` set the composing text, `I<text>` commit it (replacing the composing
 //! text), `B<n>` delete n UTF-16 units before the caret. Free a returned string with
 //! `ts_string_free`. Nothing here unwinds into the caller.
@@ -51,6 +51,10 @@ fn text(s: *const c_char) -> String {
     }
     // SAFETY: the caller passes a NUL-terminated string that stays valid for this call.
     unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned()
+}
+
+fn optional_text(s: *const c_char) -> Option<String> {
+    (!s.is_null()).then(|| text(s))
 }
 
 fn with<R>(h: *mut Handle, fallback: R, f: impl FnOnce(&mut State) -> R) -> R {
@@ -169,9 +173,9 @@ pub extern "C" fn ts_key(
     ch: u32,
     before: *const c_char,
 ) -> *mut c_char {
-    let (ch, before) = (char::from_u32(ch).unwrap_or('\0'), text(before));
+    let (ch, before) = (char::from_u32(ch).unwrap_or('\0'), optional_text(before));
     reply(with(h, "0".to_string(), |state| {
-        state.ime.key(kind, ch, &before)
+        state.ime.key(kind, ch, before.as_deref())
     }))
 }
 
@@ -182,9 +186,9 @@ pub extern "C" fn ts_reset(h: *mut Handle) {
 
 #[no_mangle]
 pub extern "C" fn ts_toggle_pause(h: *mut Handle, before: *const c_char) -> *mut c_char {
-    let before = text(before);
+    let before = optional_text(before);
     reply(with(h, "0".to_string(), |state| {
-        state.ime.toggle_pause(&before)
+        state.ime.toggle_pause(before.as_deref())
     }))
 }
 
@@ -197,13 +201,49 @@ pub extern "C" fn ts_paused(h: *mut Handle) -> c_int {
 mod tests {
     use super::*;
 
-    fn call(h: *mut Handle, kind: c_int, ch: char, before: &str) -> String {
-        let before = CString::new(before).unwrap();
-        let p = ts_key(h, kind, ch as u32, before.as_ptr());
+    fn result(p: *mut c_char) -> String {
         // SAFETY: `p` is a string this library just returned.
         let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
         unsafe { ts_string_free(p) };
         s
+    }
+
+    fn call(h: *mut Handle, kind: c_int, ch: char, before: Option<&str>) -> String {
+        let before = before.map(|before| CString::new(before).unwrap());
+        let before = before
+            .as_ref()
+            .map_or(std::ptr::null(), |before| before.as_ptr());
+        result(ts_key(h, kind, ch as u32, before))
+    }
+
+    fn toggle_pause(h: *mut Handle, before: Option<&str>) -> String {
+        let before = before.map(|before| CString::new(before).unwrap());
+        let before = before
+            .as_ref()
+            .map_or(std::ptr::null(), |before| before.as_ptr());
+        result(ts_toggle_pause(h, before))
+    }
+
+    fn new_handle(tag: &str) -> (std::path::PathBuf, *mut Handle) {
+        let dir = std::env::temp_dir().join(format!("tacit-ffi-{tag}-{}", std::process::id()));
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let h = ts_new(dir_c.as_ptr());
+        assert!(!h.is_null());
+        ts_activate(h, c"notepad".as_ptr());
+        (dir, h)
+    }
+
+    fn type_without_context(
+        h: *mut Handle,
+        field: &mut String,
+        composing: &mut String,
+        keys: &str,
+    ) {
+        for ch in keys.chars() {
+            let out = call(h, 0, ch, None);
+            assert!(out.starts_with('1'), "{out:?}");
+            apply(field, composing, &out);
+        }
     }
 
     /// Plays the commands onto the text the way a text field would.
@@ -234,16 +274,132 @@ mod tests {
         ts_activate(h, c"notepad".as_ptr());
         let (mut field, mut composing) = (String::new(), String::new());
         for ch in "dkssud".chars() {
-            let out = call(h, 0, ch, &field);
+            let out = call(h, 0, ch, Some(field.as_str()));
             assert!(out.starts_with('1'), "{out:?}");
             apply(&mut field, &mut composing, &out);
         }
-        let out = call(h, 5, '\0', &field);
+        let out = call(h, 5, '\0', Some(field.as_str()));
         apply(&mut field, &mut composing, &out);
         assert_eq!(field.trim_end(), "안녕");
         assert_eq!(ts_paused(h), 0);
         unsafe { ts_free(h) };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn null_context_retains_composition_across_keystrokes() {
+        let (dir, h) = new_handle("null-compose");
+        let (mut field, mut composing) = (String::new(), String::new());
+        type_without_context(h, &mut field, &mut composing, "dkssudgktpdy");
+        let out = call(h, 5, '\0', None);
+        assert!(out.starts_with('1'), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert_eq!(field, "안녕하세요");
+        unsafe { ts_free(h) };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn losing_document_access_mid_composition_preserves_a_prefixed_word() {
+        let (dir, h) = new_handle("context-lost-mid-word");
+        let (mut field, mut composing) = (String::from("prefix "), String::new());
+        let out = call(h, 0, 'd', Some(field.as_str()));
+        apply(&mut field, &mut composing, &out);
+
+        type_without_context(h, &mut field, &mut composing, "kssudgktpdy");
+        assert_eq!(field, "prefix 안녕하세요");
+
+        // Document access may become available again before the word is committed.
+        let out = call(h, 5, '\0', Some(field.as_str()));
+        assert!(out.starts_with('1'), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert_eq!(field, "prefix 안녕하세요");
+        assert!(composing.is_empty());
+        unsafe { ts_free(h) };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn null_context_supports_delete_escape_enter_and_pause() {
+        let (dir, h) = new_handle("null-commands");
+        let (mut field, mut composing) = (String::new(), String::new());
+        type_without_context(h, &mut field, &mut composing, "dkssud");
+        assert_eq!(field, "안녕");
+
+        let out = call(h, 2, '\0', None);
+        assert!(out.starts_with('1'), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert_eq!(field, "안녀");
+
+        let out = call(h, 3, '\0', None);
+        assert!(out.starts_with('1'), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert_eq!(field, "dkssu");
+
+        let out = call(h, 5, '\0', None);
+        assert!(out.starts_with('1'), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert!(composing.is_empty());
+        assert_eq!(field, "dkssu");
+
+        type_without_context(h, &mut field, &mut composing, "dkssud");
+        let out = toggle_pause(h, None);
+        assert!(out.contains("\u{1}I안녕"), "{out:?}");
+        apply(&mut field, &mut composing, &out);
+        assert!(composing.is_empty());
+        assert!(field.ends_with("안녕"));
+        assert_eq!(ts_paused(h), 1);
+
+        let out = toggle_pause(h, None);
+        assert!(out.starts_with('1'), "{out:?}");
+        assert_eq!(ts_paused(h), 0);
+        unsafe { ts_free(h) };
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn known_empty_context_resets_a_nonempty_mark() {
+        let (dir, h) = new_handle("empty-context");
+        let (mut field, mut composing) = (String::new(), String::new());
+        let first = call(h, 0, 'd', Some(""));
+        assert!(first.starts_with('1'), "{first:?}");
+        apply(&mut field, &mut composing, &first);
+        assert!(!composing.is_empty());
+
+        let after_reset = call(h, 0, 'k', Some(""));
+        let (fresh_dir, fresh) = new_handle("empty-context-fresh");
+        let fresh_key = call(fresh, 0, 'k', Some(""));
+        assert_eq!(after_reset, fresh_key);
+
+        unsafe { ts_free(h) };
+        unsafe { ts_free(fresh) };
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(fresh_dir);
+    }
+
+    #[test]
+    fn null_context_composition_does_not_leak_between_handles() {
+        let (first_dir, first) = new_handle("isolated-first");
+        let (second_dir, second) = new_handle("isolated-second");
+        let (mut first_field, mut first_composing) = (String::new(), String::new());
+        let (mut second_field, mut second_composing) = (String::new(), String::new());
+
+        for (a, b) in "dkssud".chars().zip("gksrnr".chars()) {
+            let out = call(first, 0, a, None);
+            assert!(out.starts_with('1'), "{out:?}");
+            apply(&mut first_field, &mut first_composing, &out);
+
+            let out = call(second, 0, b, None);
+            assert!(out.starts_with('1'), "{out:?}");
+            apply(&mut second_field, &mut second_composing, &out);
+        }
+
+        assert_eq!(first_field, "안녕");
+        assert_eq!(second_field, "한국");
+        unsafe { ts_free(first) };
+        unsafe { ts_free(second) };
+        let _ = std::fs::remove_dir_all(first_dir);
+        let _ = std::fs::remove_dir_all(second_dir);
     }
 
     #[test]
@@ -268,10 +424,10 @@ mod tests {
             ts_activate(h, c"notes".as_ptr());
             let (mut field, mut composing) = (String::new(), String::new());
             for ch in "hello".chars() {
-                let reply = call(h, 0, ch, &field);
+                let reply = call(h, 0, ch, Some(field.as_str()));
                 apply(&mut field, &mut composing, &reply);
             }
-            call(h, 5, '\0', &field).starts_with('1')
+            call(h, 5, '\0', Some(field.as_str())).starts_with('1')
         };
         assert!(confirms());
         std::fs::write(&settings, br#"{"returnConfirmsOnly":false}"#).unwrap();

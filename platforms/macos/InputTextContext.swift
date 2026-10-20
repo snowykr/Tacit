@@ -35,6 +35,14 @@ struct InputTextContext {
         return NSRange(location: start, length: end - start)
     }
 
+    /// Missing or partial document reads are unavailable context, never an empty document.
+    func read(_ substring: (NSRange) -> String?) -> String? {
+        guard let range = range else { return nil }
+        if range.length == 0 { return "" }
+        guard let text = substring(range), text.utf16.count == range.length else { return nil }
+        return text
+    }
+
     func deleting(_ count: Int) -> NSRange? {
         guard count > 0, let end = end else { return nil }
         let length = min(count, end)

@@ -14,6 +14,8 @@ struct InputTextContextTests {
         testEmojiUsesUTF16Offsets()
         testDeletionUsesMarkedEndAndClamps()
         testDeletionRejectsNonpositiveCounts()
+        testUnavailableAndPartialDocumentReads()
+        testEmptyAndUnavailableRangesDoNotRead()
         print("InputTextContext tests passed.")
     }
 
@@ -139,6 +141,34 @@ struct InputTextContextTests {
         )
         precondition(context.deleting(0) == nil, "zero deletion count must return nil")
         precondition(context.deleting(-1) == nil, "negative deletion count must return nil")
+    }
+
+    private static func testUnavailableAndPartialDocumentReads() {
+        let context = InputTextContext(
+            selected: NSRange(location: 0, length: 1),
+            marked: NSRange(location: 0, length: 1)
+        )
+        precondition(context.read { _ in nil } == nil, "missing substring must not become an empty document")
+        precondition(context.read { _ in "" } == nil, "a truncated marked-text read is unavailable context")
+        precondition(context.read { _ in "ab" } == nil, "a read outside the requested extent is unavailable context")
+        precondition(context.read { _ in "d" } == "d", "a complete marked-text read stays authoritative")
+
+        let emoji = InputTextContext(
+            selected: NSRange(location: 0, length: 2),
+            marked: NSRange(location: 0, length: 2)
+        )
+        precondition(emoji.read { _ in "😀" } == "😀", "read validation uses UTF-16, not grapheme count")
+    }
+
+    private static func testEmptyAndUnavailableRangesDoNotRead() {
+        let unavailable = NSRange(location: NSNotFound, length: NSNotFound)
+        let empty = InputTextContext(selected: NSRange(location: 0, length: 0), marked: unavailable)
+        let unknown = InputTextContext(selected: unavailable, marked: unavailable)
+        var reads = 0
+        let result = empty.read { _ in reads += 1; return "unexpected" }
+        precondition(result == "" && reads == 0, "known empty context stays distinct without a substring query")
+        let missing = unknown.read { _ in reads += 1; return "unexpected" }
+        precondition(missing == nil && reads == 0, "unavailable coordinates must not issue a document query")
     }
 
     private static func expectRange(_ actual: NSRange?, _ expected: NSRange, _ message: String) {

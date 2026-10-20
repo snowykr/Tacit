@@ -14,7 +14,10 @@ void ts_string_free(char *s);
 void ts_activate(Handle *h, const char *app);
 
 /* kind: 0 letter, 1 printable, 2 delete, 3 escape, 4 cycle, 5 enter, 6 tab, else other.
-   before: the text before the caret, ending with the composing text.
+   before (for ts_key and ts_toggle_pause): the text before the caret, ending with the composing
+   text. NULL means the host cannot provide document context; the bridge retains only its own
+   current composition. A non-NULL value, including "", is authoritative and a mismatch ends
+   the old composition.
    Returns "1" (consumed) or "0", then each command preceded by U+0001:
    M<text> set the composing text, I<text> commit it (replacing the composing text),
    B<n> delete n UTF-16 units before the caret. Free with ts_string_free. */
