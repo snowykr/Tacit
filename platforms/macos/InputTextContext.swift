@@ -1,5 +1,31 @@
 import Foundation
 
+/// The adapter owns the marked text it sends; clients need not echo it back consistently.
+struct InputComposition {
+    private(set) var markedText: String?
+
+    mutating func mark(_ text: String) {
+        markedText = text.isEmpty ? nil : text
+    }
+
+    mutating func reset() {
+        markedText = nil
+    }
+
+    mutating func takeMarkedText() -> String? {
+        let text = markedText
+        reset()
+        return text
+    }
+
+    func context(_ readDocument: () -> String?) -> String? {
+        // The core already owns this composition. Reading its echo can produce stale text,
+        // unrelated text, or composition-relative selection coordinates in desktop clients.
+        guard markedText == nil else { return nil }
+        return readDocument()
+    }
+}
+
 /// Document-relative context ending with the entire active composition, not its selection start.
 struct InputTextContext {
     private let selected: NSRange

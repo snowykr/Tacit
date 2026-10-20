@@ -11,7 +11,17 @@ private let noRange = NSRange(location: NSNotFound, length: NSNotFound)
 
 @objc(TacitController)
 class TacitController: IMKInputController {
+    // IMK creates a controller per client session. An inactive client's callbacks must not
+    // reset the engine or marked text belonging to another client.
+    private let ime: OpaquePointer? = ts_new(nil)
+    private var composition = InputComposition()
+
+    deinit {
+        if let ime = ime { ts_free(ime) }
+    }
+
     override func activateServer(_ sender: Any!) {
+        composition.reset()
         guard let ime = ime else { return }
         let client = sender as? IMKTextInput
         // The rule key of an app is the last part of its bundle id, lowercase ("com.apple.Terminal" -> "terminal").
@@ -24,8 +34,12 @@ class TacitController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
-        guard let ime = ime else { return }
-        ts_reset(ime)
+        // Clear before calling the client: insertText may cause a reentrant commit callback.
+        if let text = composition.takeMarkedText(),
+           let input = (sender as? IMKTextInput) ?? self.client() {
+            input.insertText(text, replacementRange: noRange)
+        }
+        if let ime = ime { ts_reset(ime) }
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
@@ -37,6 +51,7 @@ class TacitController: IMKInputController {
               let client = sender as? IMKTextInput else { return false }
         // A password field turns on secure event input: nothing typed there is read, counted or learned.
         if IsSecureEventInputEnabled() {
+            composition.reset()
             ts_reset(ime)
             return false
         }
@@ -67,11 +82,13 @@ class TacitController: IMKInputController {
 
     /// The text before the caret, ending with the word being composed (which is marked text).
     private func textBeforeCaret(_ client: IMKTextInput) -> String? {
-        // Document access is optional. NULL context tells the bridge to use its own composition;
-        // an empty string instead would falsely tell it that the user moved to an empty field.
-        guard client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) else { return nil }
-        let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
-        return context.read { client.attributedSubstring(from: $0)?.string }
+        return composition.context {
+            // Document access is optional. NULL context tells the bridge to use its own
+            // composition; an empty string would falsely indicate a move to an empty field.
+            guard client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) else { return nil }
+            let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
+            return context.read { client.attributedSubstring(from: $0)?.string }
+        }
     }
 
     /// Plays the commands the engine returned and says whether it consumed the key.
@@ -85,6 +102,7 @@ class TacitController: IMKInputController {
             let text = String(op.dropFirst())
             switch op.first {
             case "M":
+                composition.mark(text)
                 client.setMarkedText(text, selectionRange: NSRange(location: text.utf16.count, length: 0),
                                      replacementRange: noRange)
             case "B":
@@ -96,6 +114,7 @@ class TacitController: IMKInputController {
                     range = context.deleting(deleting) ?? noRange
                     deleting = 0
                 }
+                composition.reset()
                 client.insertText(text, replacementRange: range)
             default:
                 break

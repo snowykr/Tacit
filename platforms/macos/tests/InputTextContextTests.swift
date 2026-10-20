@@ -16,6 +16,12 @@ struct InputTextContextTests {
         testDeletionRejectsNonpositiveCounts()
         testUnavailableAndPartialDocumentReads()
         testEmptyAndUnavailableRangesDoNotRead()
+        testOwnedCompositionOverridesHostEchoes()
+        testInactiveCompositionPreservesDocumentContext()
+        testMarkReplacementAndUnicode()
+        testTakeMarkedTextIsSingleUse()
+        testEmptyMarkEndsComposition()
+        testCompositionStateIsInstanceLocal()
         print("InputTextContext tests passed.")
     }
 
@@ -169,6 +175,122 @@ struct InputTextContextTests {
         precondition(result == "" && reads == 0, "known empty context stays distinct without a substring query")
         let missing = unknown.read { _ in reads += 1; return "unexpected" }
         precondition(missing == nil && reads == 0, "unavailable coordinates must not issue a document query")
+    }
+
+    private static func testOwnedCompositionOverridesHostEchoes() {
+        var composition = InputComposition()
+        composition.mark("に")
+        let discordEcho = "か"
+        guard let ownedMark = composition.markedText else {
+            preconditionFailure("Discord echo scenario requires an owned mark")
+        }
+        precondition(
+            discordEcho != ownedMark && discordEcho.utf16.count == ownedMark.utf16.count,
+            "Discord's wrong document echo differs from the owned mark but has the same UTF-16 length"
+        )
+        var reads = 0
+        let discordContext = composition.context {
+            reads += 1
+            return discordEcho
+        }
+        precondition(discordContext == nil && reads == 0, "an owned mark must reject Discord's same-length document echo without reading it")
+
+        composition.mark("ChatGPT composition")
+        let chatGPTContext = composition.context {
+            reads += 1
+            return ""
+        }
+        precondition(
+            chatGPTContext == nil && reads == 0,
+            "ChatGPT selected {0,2} / marked {4267,2} can yield an empty relative read; an owned mark must reject it without reading"
+        )
+    }
+
+    private static func testInactiveCompositionPreservesDocumentContext() {
+        let composition = InputComposition()
+        var reads = 0
+        let unavailable = composition.context {
+            reads += 1
+            return nil
+        }
+        precondition(unavailable == nil && reads == 1, "inactive composition must preserve unavailable document context and invoke the reader")
+
+        let committed = composition.context {
+            reads += 1
+            return "committed context"
+        }
+        precondition(committed == "committed context" && reads == 2, "inactive composition must preserve plain committed context exactly")
+    }
+
+    private static func testMarkReplacementAndUnicode() {
+        var composition = InputComposition()
+        composition.mark("k")
+        precondition(composition.markedText == "k", "first mark must be owned")
+        composition.mark("かな")
+        precondition(composition.markedText == "かな", "new Japanese mark must replace rather than append to the previous mark")
+        composition.mark("😀かな")
+        precondition(composition.markedText == "😀かな", "Unicode mark replacement must preserve the complete composed text")
+    }
+
+    private static func testTakeMarkedTextIsSingleUse() {
+        var composition = InputComposition()
+        composition.mark("かな")
+        let firstCommit = composition.takeMarkedText()
+        precondition(firstCommit == "かな" && composition.markedText == nil, "taking a mark must return it and clear owned composition atomically")
+
+        let repeatedCommit = composition.takeMarkedText()
+        precondition(repeatedCommit == nil, "taking the same native mark again must not produce a duplicate commit")
+
+        var reads = 0
+        let committedContext = composition.context {
+            reads += 1
+            return "かな"
+        }
+        precondition(committedContext == "かな" && reads == 1, "after taking the mark, committed document context must be read normally")
+    }
+
+    private static func testEmptyMarkEndsComposition() {
+        var composition = InputComposition()
+        composition.mark("owned text")
+        composition.mark("")
+        precondition(composition.markedText == nil, "an empty mark update must end the owned composition")
+
+        var reads = 0
+        let context = composition.context {
+            reads += 1
+            return "document context"
+        }
+        precondition(context == "document context" && reads == 1, "after an empty mark update, document context must be read normally")
+    }
+
+    private static func testCompositionStateIsInstanceLocal() {
+        var active = InputComposition()
+        var inactive = InputComposition()
+        active.mark("active mark")
+        inactive.reset()
+
+        var activeReads = 0
+        let activeContext = active.context {
+            activeReads += 1
+            return "untrusted echo"
+        }
+        precondition(activeContext == nil && activeReads == 0, "resetting another inactive composition must not clear the active instance's mark")
+        precondition(active.markedText == "active mark", "owned mark state must remain local to its composition instance")
+
+        var inactiveReads = 0
+        let inactiveContext = inactive.context {
+            inactiveReads += 1
+            return "inactive document"
+        }
+        precondition(inactiveContext == "inactive document" && inactiveReads == 1, "an active composition must not leak into another instance")
+
+        active.reset()
+        precondition(active.markedText == nil, "reset must clear the composition on which it is called")
+        let resetContext = active.context {
+            activeReads += 1
+            return "document after reset"
+        }
+        precondition(resetContext == "document after reset" && activeReads == 1, "the reset instance must resume reading document context")
     }
 
     private static func expectRange(_ actual: NSRange?, _ expected: NSRange, _ message: String) {
