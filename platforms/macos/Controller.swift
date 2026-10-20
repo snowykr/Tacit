@@ -80,7 +80,7 @@ class TacitController: IMKInputController {
         return run(ts_key(ime, kind.rawValue, scalar, before), client)
     }
 
-    /// The text before the caret, ending with the word being composed (which is marked text).
+    /// Optional document context; the core supplies any composition owned by this controller.
     private func textBeforeCaret(_ client: IMKTextInput) -> String? {
         return composition.context {
             // Document access is optional. NULL context tells the bridge to use its own

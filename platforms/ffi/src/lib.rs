@@ -216,14 +216,6 @@ mod tests {
         result(ts_key(h, kind, ch as u32, before))
     }
 
-    fn toggle_pause(h: *mut Handle, before: Option<&str>) -> String {
-        let before = before.map(|before| CString::new(before).unwrap());
-        let before = before
-            .as_ref()
-            .map_or(std::ptr::null(), |before| before.as_ptr());
-        result(ts_toggle_pause(h, before))
-    }
-
     fn new_handle(tag: &str) -> (std::path::PathBuf, *mut Handle) {
         let dir = std::env::temp_dir().join(format!("tacit-ffi-{tag}-{}", std::process::id()));
         let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
@@ -267,11 +259,7 @@ mod tests {
 
     #[test]
     fn typing_dkssud_gives_korean_through_the_c_interface() {
-        let dir = std::env::temp_dir().join(format!("ts-ffi-{}", std::process::id()));
-        let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
-        let h = ts_new(dir_c.as_ptr());
-        assert!(!h.is_null());
-        ts_activate(h, c"notepad".as_ptr());
+        let (dir, h) = new_handle("known-context");
         let (mut field, mut composing) = (String::new(), String::new());
         for ch in "dkssud".chars() {
             let out = call(h, 0, ch, Some(field.as_str()));
@@ -343,14 +331,14 @@ mod tests {
         assert_eq!(field, "dkssu");
 
         type_without_context(h, &mut field, &mut composing, "dkssud");
-        let out = toggle_pause(h, None);
+        let out = result(ts_toggle_pause(h, std::ptr::null()));
         assert!(out.contains("\u{1}I안녕"), "{out:?}");
         apply(&mut field, &mut composing, &out);
         assert!(composing.is_empty());
         assert!(field.ends_with("안녕"));
         assert_eq!(ts_paused(h), 1);
 
-        let out = toggle_pause(h, None);
+        let out = result(ts_toggle_pause(h, std::ptr::null()));
         assert!(out.starts_with('1'), "{out:?}");
         assert_eq!(ts_paused(h), 0);
         unsafe { ts_free(h) };
@@ -404,10 +392,7 @@ mod tests {
 
     #[test]
     fn a_null_handle_is_ignored() {
-        let p = ts_key(std::ptr::null_mut(), 0, 'a' as u32, std::ptr::null());
-        // SAFETY: just returned by this library.
-        assert_eq!(unsafe { CStr::from_ptr(p) }.to_str().unwrap(), "0");
-        unsafe { ts_string_free(p) };
+        assert_eq!(call(std::ptr::null_mut(), 0, 'a', None), "0");
         unsafe { ts_free(std::ptr::null_mut()) };
     }
 

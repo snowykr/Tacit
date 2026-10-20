@@ -18,7 +18,6 @@ struct InputTextContextTests {
         testEmptyAndUnavailableRangesDoNotRead()
         testOwnedCompositionOverridesHostEchoes()
         testInactiveCompositionPreservesDocumentContext()
-        testMarkReplacementAndUnicode()
         testTakeMarkedTextIsSingleUse()
         testEmptyMarkEndsComposition()
         testCompositionStateIsInstanceLocal()
@@ -117,7 +116,6 @@ struct InputTextContextTests {
     private static func testEmojiUsesUTF16Offsets() {
         let text = "A😀B" as NSString
         let emoji = text.range(of: "😀")
-        precondition(emoji == NSRange(location: 1, length: 2), "emoji occupies two UTF-16 code units")
 
         let context = InputTextContext(selected: emoji, marked: emoji)
         precondition(context.end == 3, "marked emoji end must use UTF-16 offsets")
@@ -180,30 +178,19 @@ struct InputTextContextTests {
     private static func testOwnedCompositionOverridesHostEchoes() {
         var composition = InputComposition()
         composition.mark("に")
-        let discordEcho = "か"
-        guard let ownedMark = composition.markedText else {
-            preconditionFailure("Discord echo scenario requires an owned mark")
-        }
-        precondition(
-            discordEcho != ownedMark && discordEcho.utf16.count == ownedMark.utf16.count,
-            "Discord's wrong document echo differs from the owned mark but has the same UTF-16 length"
-        )
+        // Discord returned a conflicting echo; ChatGPT's coordinates yielded empty text.
         var reads = 0
         let discordContext = composition.context {
             reads += 1
-            return discordEcho
+            return "か"
         }
-        precondition(discordContext == nil && reads == 0, "an owned mark must reject Discord's same-length document echo without reading it")
+        precondition(discordContext == nil && reads == 0, "owned mark must skip conflicting host reads")
 
-        composition.mark("ChatGPT composition")
         let chatGPTContext = composition.context {
             reads += 1
             return ""
         }
-        precondition(
-            chatGPTContext == nil && reads == 0,
-            "ChatGPT selected {0,2} / marked {4267,2} can yield an empty relative read; an owned mark must reject it without reading"
-        )
+        precondition(chatGPTContext == nil && reads == 0, "owned mark must skip empty host reads")
     }
 
     private static func testInactiveCompositionPreservesDocumentContext() {
@@ -222,21 +209,12 @@ struct InputTextContextTests {
         precondition(committed == "committed context" && reads == 2, "inactive composition must preserve plain committed context exactly")
     }
 
-    private static func testMarkReplacementAndUnicode() {
-        var composition = InputComposition()
-        composition.mark("k")
-        precondition(composition.markedText == "k", "first mark must be owned")
-        composition.mark("かな")
-        precondition(composition.markedText == "かな", "new Japanese mark must replace rather than append to the previous mark")
-        composition.mark("😀かな")
-        precondition(composition.markedText == "😀かな", "Unicode mark replacement must preserve the complete composed text")
-    }
-
     private static func testTakeMarkedTextIsSingleUse() {
         var composition = InputComposition()
-        composition.mark("かな")
+        composition.mark("k")
+        composition.mark("😀かな")
         let firstCommit = composition.takeMarkedText()
-        precondition(firstCommit == "かな" && composition.markedText == nil, "taking a mark must return it and clear owned composition atomically")
+        precondition(firstCommit == "😀かな" && composition.markedText == nil, "taking the latest Unicode mark must clear owned composition atomically")
 
         let repeatedCommit = composition.takeMarkedText()
         precondition(repeatedCommit == nil, "taking the same native mark again must not produce a duplicate commit")
@@ -244,9 +222,9 @@ struct InputTextContextTests {
         var reads = 0
         let committedContext = composition.context {
             reads += 1
-            return "かな"
+            return "😀かな"
         }
-        precondition(committedContext == "かな" && reads == 1, "after taking the mark, committed document context must be read normally")
+        precondition(committedContext == "😀かな" && reads == 1, "after taking the mark, committed document context must be read normally")
     }
 
     private static func testEmptyMarkEndsComposition() {

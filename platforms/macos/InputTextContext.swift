@@ -56,7 +56,7 @@ struct InputTextContext {
     var range: NSRange? {
         guard let end = end else { return nil }
         var start = max(0, end - 64)
-        // The bridge requires the full composing suffix, even for words longer than 64 units.
+        // Preserve a containing native mark even beyond the usual look-behind.
         if let marked = activeMark { start = min(start, marked.location) }
         return NSRange(location: start, length: end - start)
     }
