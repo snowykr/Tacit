@@ -196,14 +196,9 @@ struct ControllerTests {
     }
 
     private static func makeController(_ client: RecordingClient) -> TestTacitController {
-        requireController(
-            TestTacitController(server: nil, delegate: nil, client: client),
-            "isolated IMKInputController"
-        )
-    }
-
-    private static func requireController(_ controller: TestTacitController?, _ label: String) -> TestTacitController {
-        guard let controller = controller else { preconditionFailure("Failed to initialize \(label)") }
+        guard let controller = TestTacitController(server: nil, delegate: nil, client: client) else {
+            preconditionFailure("Failed to initialize isolated IMKInputController")
+        }
         return controller
     }
 

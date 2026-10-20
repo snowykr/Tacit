@@ -248,12 +248,12 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            Self::with_settings(br#"{"languages":["en","ko"],"returnConfirmsOnly":true}"#)
-        }
-
-        fn with_settings(settings: &[u8]) -> Self {
             let dir = TempDir::new();
-            std::fs::write(dir.path().join("settings.json"), settings).unwrap();
+            std::fs::write(
+                dir.path().join("settings.json"),
+                br#"{"languages":["en","ko"],"returnConfirmsOnly":true}"#,
+            )
+            .unwrap();
             Self::from_dir(dir)
         }
 
@@ -297,21 +297,12 @@ mod tests {
         result(ts_key(h, kind, ch as u32, before, before_start))
     }
 
-    /// Context-local tests use origin zero; a missing context has genuinely unknown identity.
-    fn call(h: *mut TacitHandle, kind: c_int, ch: char, before: Option<&str>) -> String {
-        call_at(h, kind, ch, before, if before.is_some() { 0 } else { -1 })
-    }
-
     fn toggle_at(h: *mut TacitHandle, before: Option<&str>, before_start: i64) -> String {
         let before = before.map(|before| CString::new(before).unwrap());
         let before = before
             .as_ref()
             .map_or(std::ptr::null(), |before| before.as_ptr());
         result(ts_toggle_pause(h, before, before_start))
-    }
-
-    fn toggle(h: *mut TacitHandle, before: Option<&str>) -> String {
-        toggle_at(h, before, if before.is_some() { 0 } else { -1 })
     }
 
     /// A tiny UTF-16 editor that replays the actual bridge protocol and native key passthrough.
@@ -411,7 +402,7 @@ mod tests {
             match kind {
                 0 | 1 => {
                     let mut buffer = [0; 2];
-                    let inserted: Vec<u16> = ch.encode_utf16(&mut buffer).to_vec();
+                    let inserted = ch.encode_utf16(&mut buffer);
                     self.units
                         .splice(self.cursor..self.cursor, inserted.iter().copied());
                     self.cursor += inserted.len();
@@ -479,15 +470,10 @@ mod tests {
         }
 
         fn append_external(&mut self, text: &str) {
-            let inserted: Vec<u16> = text.encode_utf16().collect();
+            let old_len = self.units.len();
             self.units
-                .splice(self.cursor..self.cursor, inserted.iter().copied());
-            self.cursor += inserted.len();
-        }
-
-        fn replace_last_unit(&mut self, unit: u16) {
-            assert!(self.cursor > 0);
-            self.units[self.cursor - 1] = unit;
+                .splice(self.cursor..self.cursor, text.encode_utf16());
+            self.cursor += self.units.len() - old_len;
         }
     }
 
@@ -550,13 +536,13 @@ mod tests {
         assert_eq!(editor.text(), "dkssu");
 
         editor.type_unknown(fixture.handle, "dkssud");
-        let out = toggle(fixture.handle, None);
+        let out = toggle_at(fixture.handle, None, -1);
         assert!(out.contains("\u{1}I안녕"), "{out:?}");
         editor.apply(&out);
         assert_eq!(editor.text(), "dkssu안녕");
         assert_eq!(ts_paused(fixture.handle), 1);
 
-        let out = toggle(fixture.handle, None);
+        let out = toggle_at(fixture.handle, None, -1);
         assert!(out.starts_with('1'), "{out:?}");
         editor.apply(&out);
         assert_eq!(ts_paused(fixture.handle), 0);
@@ -580,11 +566,14 @@ mod tests {
         let fixture = Fixture::new();
         let fresh = Fixture::new();
         let mut editor = Editor::new("", 0);
-        let first = call(fixture.handle, 0, 'd', Some(""));
+        let first = editor.press_known(fixture.handle, 0, 'd');
         assert!(first.starts_with('1'), "{first:?}");
-        editor.apply(&first);
-        let after_reset = call(fixture.handle, 0, 'k', Some(""));
-        let fresh_key = call(fresh.handle, 0, 'k', Some(""));
+        assert!(
+            editor.marked.is_some(),
+            "reset must start with a nonempty mark"
+        );
+        let after_reset = call_at(fixture.handle, 0, 'k', Some(""), 0);
+        let fresh_key = call_at(fresh.handle, 0, 'k', Some(""), 0);
         assert_eq!(after_reset, fresh_key);
     }
 
@@ -603,7 +592,7 @@ mod tests {
 
     #[test]
     fn a_null_handle_is_ignored() {
-        assert_eq!(call(std::ptr::null_mut(), 0, 'a', None), "0");
+        assert_eq!(call_at(std::ptr::null_mut(), 0, 'a', None, -1), "0");
         unsafe { ts_free(std::ptr::null_mut()) };
     }
 
@@ -696,7 +685,7 @@ mod tests {
             editor.press_known(fixture.handle, 1, ' ');
             let end = editor.cursor;
             if change_boundary {
-                editor.replace_last_unit('!' as u16);
+                editor.units[end - 1] = '!' as u16;
             } else {
                 let previous = editor.units[end - 2];
                 editor.units[end - 2] = if previous == '녕' as u16 {

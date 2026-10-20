@@ -147,7 +147,6 @@ struct InputTextContextTests {
     private static func testWindowContextCarriesItsDocumentOrigin() {
         let document = String(repeating: "😀", count: 40) + String(repeating: "가", count: 40)
         let documentLength = document.utf16.count
-        precondition(documentLength == 120, "fixture must measure the document in UTF-16 units")
         let context = InputTextContext(
             selected: NSRange(location: documentLength, length: 0),
             marked: NSRange(location: NSNotFound, length: 0)
