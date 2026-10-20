@@ -8,8 +8,6 @@ private enum Kind: Int32 {
 }
 
 private let noRange = NSRange(location: NSNotFound, length: NSNotFound)
-/// How much text before the caret the engine gets to see (UTF-16 units).
-private let lookBehind = 64
 
 @objc(TacitController)
 class TacitController: IMKInputController {
@@ -69,10 +67,8 @@ class TacitController: IMKInputController {
 
     /// The text before the caret, ending with the word being composed (which is marked text).
     private func textBeforeCaret(_ client: IMKTextInput) -> String {
-        let caret = client.selectedRange()
-        guard caret.location != NSNotFound, caret.location > 0 else { return "" }
-        let start = max(0, caret.location - lookBehind)
-        let range = NSRange(location: start, length: caret.location - start)
+        let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
+        guard let range = context.range, range.length > 0 else { return "" }
         return client.attributedSubstring(from: range)?.string ?? ""
     }
 
@@ -94,8 +90,8 @@ class TacitController: IMKInputController {
             case "I":
                 var range = noRange
                 if deleting > 0 {
-                    let caret = client.selectedRange().location
-                    if caret != NSNotFound { range = NSRange(location: max(0, caret - deleting), length: deleting) }
+                    let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
+                    range = context.deleting(deleting) ?? noRange
                     deleting = 0
                 }
                 client.insertText(text, replacementRange: range)
