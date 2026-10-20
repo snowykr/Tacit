@@ -94,7 +94,7 @@ pub extern "system" fn Java_io_github_iamallyouneed_tacit_Native_nativeKey(
     let before = text(&mut env, &before);
     let ch = char::from_u32(ch as u32).unwrap_or('\0');
     let out = with(handle, "0".to_string(), |ime| {
-        ime.key(kind, ch, Some(&before))
+        ime.key(kind, ch, Some(&before), Some(0))
     });
     reply(&env, &out)
 }
@@ -117,7 +117,7 @@ pub extern "system" fn Java_io_github_iamallyouneed_tacit_Native_nativeTogglePau
 ) -> jstring {
     let before = text(&mut env, &before);
     let out = with(handle, "0".to_string(), |ime| {
-        ime.toggle_pause(Some(&before))
+        ime.toggle_pause(Some(&before), Some(0))
     });
     reply(&env, &out)
 }

@@ -46,11 +46,15 @@ class TacitController: IMKInputController {
         return Int(NSEvent.EventTypeMask.keyDown.rawValue)
     }
 
+    func secureInputEnabled() -> Bool {
+        IsSecureEventInputEnabled()
+    }
+
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let ime = ime, let event = event, event.type == .keyDown,
               let client = sender as? IMKTextInput else { return false }
         // A password field turns on secure event input: nothing typed there is read, counted or learned.
-        if IsSecureEventInputEnabled() {
+        if secureInputEnabled() {
             composition.reset()
             ts_reset(ime)
             return false
@@ -58,7 +62,7 @@ class TacitController: IMKInputController {
         let before = textBeforeCaret(client)
         // Option+Space pauses tacit in this text field (macOS has no 한/영 key to catch).
         if event.modifierFlags.contains(.option), event.keyCode == 49 {
-            return run(ts_toggle_pause(ime, before), client)
+            return run(ts_toggle_pause(ime, before.text, before.bridgeStart), client)
         }
         var scalar: UInt32 = 0
         var kind = Kind.other
@@ -77,17 +81,19 @@ class TacitController: IMKInputController {
                 }
             }
         }
-        return run(ts_key(ime, kind.rawValue, scalar, before), client)
+        return run(ts_key(ime, kind.rawValue, scalar, before.text, before.bridgeStart), client)
     }
 
     /// Optional document context; the core supplies any composition owned by this controller.
-    private func textBeforeCaret(_ client: IMKTextInput) -> String? {
+    private func textBeforeCaret(_ client: IMKTextInput) -> InputContext {
         return composition.context {
             // Document access is optional. NULL context tells the bridge to use its own
             // composition; an empty string would falsely indicate a move to an empty field.
-            guard client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) else { return nil }
+            guard client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) else {
+                return InputContext(text: nil, start: nil)
+            }
             let context = InputTextContext(selected: client.selectedRange(), marked: client.markedRange())
-            return context.read { client.attributedSubstring(from: $0)?.string }
+            return context.context { client.attributedSubstring(from: $0)?.string }
         }
     }
 
@@ -102,7 +108,15 @@ class TacitController: IMKInputController {
             let text = String(op.dropFirst())
             switch op.first {
             case "M":
-                composition.mark(text)
+                let start: Int?
+                if composition.markedText != nil {
+                    start = composition.start
+                } else if client.supportsProperty(UInt32(kTSMDocumentSupportDocumentAccessPropertyTag)) {
+                    start = InputTextContext(selected: client.selectedRange(), marked: client.markedRange()).replacementStart
+                } else {
+                    start = nil
+                }
+                composition.mark(text, at: start)
                 client.setMarkedText(text, selectionRange: NSRange(location: text.utf16.count, length: 0),
                                      replacementRange: noRange)
             case "B":

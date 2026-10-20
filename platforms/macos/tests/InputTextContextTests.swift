@@ -12,14 +12,17 @@ struct InputTextContextTests {
         testInvalidSelectedRangesAreUnavailable()
         testLongMarkedRangeIsPreserved()
         testEmojiUsesUTF16Offsets()
+        testReplacementStartUsesMarkThenSelection()
+        testWindowContextCarriesItsDocumentOrigin()
+        testUnavailableContextRetainsKnownCaretOrUnknownOrigin()
         testDeletionUsesMarkedEndAndClamps()
         testDeletionRejectsNonpositiveCounts()
         testUnavailableAndPartialDocumentReads()
         testEmptyAndUnavailableRangesDoNotRead()
-        testOwnedCompositionOverridesHostEchoes()
+        testOwnedCompositionOverridesHostEchoesAndRetainsOrigin()
         testInactiveCompositionPreservesDocumentContext()
-        testTakeMarkedTextIsSingleUse()
-        testEmptyMarkEndsComposition()
+        testTakeMarkedTextIsSingleUseAndClearsOrigin()
+        testEmptyMarkEndsCompositionAndClearsOrigin()
         testCompositionStateIsInstanceLocal()
         print("InputTextContext tests passed.")
     }
@@ -116,10 +119,63 @@ struct InputTextContextTests {
     private static func testEmojiUsesUTF16Offsets() {
         let text = "A😀B" as NSString
         let emoji = text.range(of: "😀")
-
         let context = InputTextContext(selected: emoji, marked: emoji)
         precondition(context.end == 3, "marked emoji end must use UTF-16 offsets")
         expectRange(context.range, NSRange(location: 0, length: 3), "emoji context range must use UTF-16 offsets")
+    }
+
+    private static func testReplacementStartUsesMarkThenSelection() {
+        let activeMark = InputTextContext(
+            selected: NSRange(location: 7, length: 0),
+            marked: NSRange(location: 3, length: 5)
+        )
+        precondition(activeMark.replacementStart == 3, "native mark start must anchor replacement instead of its selection")
+
+        let selection = InputTextContext(
+            selected: NSRange(location: 12, length: 4),
+            marked: NSRange(location: NSNotFound, length: 0)
+        )
+        precondition(selection.replacementStart == 12, "without a valid mark, replacement starts at the selection")
+
+        let unknown = InputTextContext(
+            selected: NSRange(location: NSNotFound, length: NSNotFound),
+            marked: NSRange(location: NSNotFound, length: NSNotFound)
+        )
+        precondition(unknown.replacementStart == nil, "unknown native coordinates must not fabricate a replacement origin")
+    }
+
+    private static func testWindowContextCarriesItsDocumentOrigin() {
+        let document = String(repeating: "😀", count: 40) + String(repeating: "가", count: 40)
+        let documentLength = document.utf16.count
+        precondition(documentLength == 120, "fixture must measure the document in UTF-16 units")
+        let context = InputTextContext(
+            selected: NSRange(location: documentLength, length: 0),
+            marked: NSRange(location: NSNotFound, length: 0)
+        )
+        var requested: NSRange?
+        let result = context.context { range in
+            requested = range
+            return (document as NSString).substring(with: range)
+        }
+        expectRange(requested, NSRange(location: 56, length: 64), "look-behind window in document coordinates")
+        precondition(result.text == (document as NSString).substring(from: 56), "context text must match the actual trailing UTF-16 window")
+        precondition(result.start == 56 && result.bridgeStart == 56, "read text must carry its actual document origin")
+    }
+
+    private static func testUnavailableContextRetainsKnownCaretOrUnknownOrigin() {
+        let unavailableRead = InputTextContext(
+            selected: NSRange(location: 17, length: 0),
+            marked: NSRange(location: NSNotFound, length: 0)
+        ).context { _ in nil }
+        precondition(unavailableRead.text == nil, "missing document text must remain unavailable")
+        precondition(unavailableRead.start == 17 && unavailableRead.bridgeStart == 17, "a known caret remains a valid origin without text")
+
+        let unavailableCoordinates = InputTextContext(
+            selected: NSRange(location: NSNotFound, length: NSNotFound),
+            marked: NSRange(location: NSNotFound, length: NSNotFound)
+        ).context { _ in "unexpected" }
+        precondition(unavailableCoordinates.text == nil, "unknown coordinates cannot produce document text")
+        precondition(unavailableCoordinates.start == nil && unavailableCoordinates.bridgeStart == -1, "unknown coordinates use the explicit unknown-origin sentinel")
     }
 
     private static func testDeletionUsesMarkedEndAndClamps() {
@@ -175,22 +231,24 @@ struct InputTextContextTests {
         precondition(missing == nil && reads == 0, "unavailable coordinates must not issue a document query")
     }
 
-    private static func testOwnedCompositionOverridesHostEchoes() {
+    private static func testOwnedCompositionOverridesHostEchoesAndRetainsOrigin() {
         var composition = InputComposition()
-        composition.mark("に")
-        // Discord returned a conflicting echo; ChatGPT's coordinates yielded empty text.
+        composition.mark("に", at: 128)
+        composition.mark("か", at: composition.start)
         var reads = 0
-        let discordContext = composition.context {
+        let echo = composition.context {
             reads += 1
-            return "か"
+            return InputContext(text: "wrong host echo", start: 0)
         }
-        precondition(discordContext == nil && reads == 0, "owned mark must skip conflicting host reads")
+        precondition(echo.text == nil && echo.start == 128 && echo.bridgeStart == 128, "owned mark must keep its first trusted origin and suppress host echoes")
+        precondition(reads == 0, "owned composition must not invoke the document reader")
 
-        let chatGPTContext = composition.context {
-            reads += 1
-            return ""
-        }
-        precondition(chatGPTContext == nil && reads == 0, "owned mark must skip empty host reads")
+        var unknownComposition = InputComposition()
+        unknownComposition.mark("unknown", at: nil)
+        unknownComposition.mark("updated", at: unknownComposition.start)
+        let unknown = unknownComposition.context { reads += 1; return InputContext(text: "stale", start: 0) }
+        precondition(unknown.text == nil && unknown.start == nil && unknown.bridgeStart == -1, "an unknown first mark origin must remain unknown")
+        precondition(reads == 0, "updating an owned mark must still skip host reads")
     }
 
     private static func testInactiveCompositionPreservesDocumentContext() {
@@ -198,77 +256,74 @@ struct InputTextContextTests {
         var reads = 0
         let unavailable = composition.context {
             reads += 1
-            return nil
+            return InputContext(text: nil, start: 23)
         }
-        precondition(unavailable == nil && reads == 1, "inactive composition must preserve unavailable document context and invoke the reader")
+        precondition(unavailable.text == nil && unavailable.start == 23 && reads == 1, "inactive composition must preserve known-origin unavailable context")
 
         let committed = composition.context {
             reads += 1
-            return "committed context"
+            return InputContext(text: "committed context", start: 19)
         }
-        precondition(committed == "committed context" && reads == 2, "inactive composition must preserve plain committed context exactly")
+        precondition(committed.text == "committed context" && committed.start == 19 && reads == 2, "inactive composition must preserve document context and origin exactly")
     }
 
-    private static func testTakeMarkedTextIsSingleUse() {
+    private static func testTakeMarkedTextIsSingleUseAndClearsOrigin() {
         var composition = InputComposition()
-        composition.mark("k")
-        composition.mark("😀かな")
+        composition.mark("k", at: 3)
+        composition.mark("😀かな", at: 3)
         let firstCommit = composition.takeMarkedText()
-        precondition(firstCommit == "😀かな" && composition.markedText == nil, "taking the latest Unicode mark must clear owned composition atomically")
+        precondition(firstCommit == "😀かな" && composition.markedText == nil && composition.start == nil, "taking the latest Unicode mark must clear owned text and origin atomically")
 
-        let repeatedCommit = composition.takeMarkedText()
-        precondition(repeatedCommit == nil, "taking the same native mark again must not produce a duplicate commit")
-
+        precondition(composition.takeMarkedText() == nil, "taking the same native mark again must not produce a duplicate commit")
         var reads = 0
         let committedContext = composition.context {
             reads += 1
-            return "😀かな"
+            return InputContext(text: "😀かな", start: 42)
         }
-        precondition(committedContext == "😀かな" && reads == 1, "after taking the mark, committed document context must be read normally")
+        precondition(committedContext.text == "😀かな" && committedContext.start == 42 && reads == 1, "after take, the next context must come from the document reader")
     }
 
-    private static func testEmptyMarkEndsComposition() {
+    private static func testEmptyMarkEndsCompositionAndClearsOrigin() {
         var composition = InputComposition()
-        composition.mark("owned text")
-        composition.mark("")
-        precondition(composition.markedText == nil, "an empty mark update must end the owned composition")
+        composition.mark("owned text", at: 7)
+        composition.mark("", at: 7)
+        precondition(composition.markedText == nil && composition.start == nil, "an empty mark update must clear owned text and origin")
 
         var reads = 0
         let context = composition.context {
             reads += 1
-            return "document context"
+            return InputContext(text: "document context", start: 31)
         }
-        precondition(context == "document context" && reads == 1, "after an empty mark update, document context must be read normally")
+        precondition(context.text == "document context" && context.start == 31 && reads == 1, "after an empty mark update, document context must be read normally")
     }
 
     private static func testCompositionStateIsInstanceLocal() {
         var active = InputComposition()
         var inactive = InputComposition()
-        active.mark("active mark")
+        active.mark("active mark", at: 70)
         inactive.reset()
 
         var activeReads = 0
         let activeContext = active.context {
             activeReads += 1
-            return "untrusted echo"
+            return InputContext(text: "untrusted echo", start: 0)
         }
-        precondition(activeContext == nil && activeReads == 0, "resetting another inactive composition must not clear the active instance's mark")
-        precondition(active.markedText == "active mark", "owned mark state must remain local to its composition instance")
+        precondition(activeContext.text == nil && activeContext.start == 70 && activeReads == 0, "resetting another composition must not clear an active instance's mark or origin")
 
         var inactiveReads = 0
         let inactiveContext = inactive.context {
             inactiveReads += 1
-            return "inactive document"
+            return InputContext(text: "inactive document", start: 8)
         }
-        precondition(inactiveContext == "inactive document" && inactiveReads == 1, "an active composition must not leak into another instance")
+        precondition(inactiveContext.text == "inactive document" && inactiveContext.start == 8 && inactiveReads == 1, "an active composition must not leak into another instance")
 
         active.reset()
-        precondition(active.markedText == nil, "reset must clear the composition on which it is called")
+        precondition(active.markedText == nil && active.start == nil, "reset must clear both owned text and its origin")
         let resetContext = active.context {
             activeReads += 1
-            return "document after reset"
+            return InputContext(text: "document after reset", start: 9)
         }
-        precondition(resetContext == "document after reset" && activeReads == 1, "the reset instance must resume reading document context")
+        precondition(resetContext.text == "document after reset" && resetContext.start == 9 && activeReads == 1, "the reset instance must resume reading document context")
     }
 
     private static func expectRange(_ actual: NSRange?, _ expected: NSRange, _ message: String) {
