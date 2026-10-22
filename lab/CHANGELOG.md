@@ -6,6 +6,25 @@ a **minor** version when an existing metric stops being comparable with an older
 is sampled or built another way, a case file changes what it expects); a **patch** for anything
 else (a new metric, a flag, a fix). A baseline records the lab version it was made with.
 
+## Unreleased
+
+### Added
+
+- Production-only `--shift-overlap --shift-split dev|holdout|all` TSV snapshots with
+  pre-augmentation key groups, dev-only issue-12 repros, composition-checked Korean carryover,
+  exact-case English controls, contextual decisions and explicitly contextless session replay.
+- `compare_shift.py` validates identical contracts, reports every surface change and exact
+  bucket counts, rejects new wrong outputs, and optionally saves JSON with snapshot hashes.
+  Focused augmentation/partition tests and comparator `--selftest` cover the new infrastructure.
+  Existing accuracy metrics, baselines, package version and performance loops are unchanged.
+- Intersecting English identifier controls (`{word}RI`, `{word}WL`, `RKey{Title}`), plus
+  focused tests of the shared confirms-only session oracle (actual mark, Enter, exactly one
+  Space, and host punctuation) and construction of all 60 nonmixed Japanese readings.
+  Mixed Latin/kana conversion fixtures remain in the existing Japanese evaluator.
+  Baseline and candidate must use the same evaluator; production candidate selection requires
+  Korean lexical and sequence evidence and does not authorize Japanese via Shift overlap.
+  No final heldout result is asserted here.
+
 ## [0.2.12]
 
 ### Added

@@ -163,7 +163,7 @@ const ENGLISH_FLOOR_MEDIUM: f64 = -2.0;
 const ENGLISH_FLOOR_SHORT: f64 = -2.6;
 /// Taken off the English score when the token has non-letters.
 const NON_LETTER_PENALTY: f64 = 3.0;
-/// Confidence for keys with a capital outside QWERTOP: only ever English.
+/// Confidence for capitals not explained by a Korean Shift sequence.
 const CAPITALISED_ENGLISH_CONFIDENCE: f64 = 0.99;
 /// A single consonant key typed inside Korean text (ㅇ for d): it is the jamo, not an English letter.
 const LONE_CONSONANT_CONFIDENCE: f64 = 0.95;
@@ -372,12 +372,25 @@ impl Default for HeuristicEngine {
 
 impl DecisionEngine for HeuristicEngine {
     fn decide(&self, keys: &str, context: &DecisionContext) -> Decision {
-        // Shift on a key that has no shifted jamo (e.g. "Hello", "API") is only ever English.
-        if self.english_on
+        let capitalized_english = self.english_on
             && keys
                 .chars()
-                .any(|c| c.is_uppercase() && !DubeolsikLayout::is_korean_shift_key(c))
-        {
+                .any(|c| c.is_uppercase() && !DubeolsikLayout::is_korean_shift_key(c));
+        // A delayed Shift release can reach the next unchanged vowel. Only let
+        // existing Korean lexical evidence challenge the English capitalization;
+        // merely forming syllables is not enough to reinterpret an identifier.
+        let overlap_score = (capitalized_english
+            && self.korean_on
+            && !DubeolsikLayout::has_unexplained_capital(keys))
+        .then(|| {
+            self.korean_score(
+                keys,
+                context.partial,
+                context.previous_language.map(Language::sentence_language)
+                    == Some(Language::Korean),
+            )
+        });
+        if capitalized_english && !overlap_score.as_ref().is_some_and(|(_, known)| *known) {
             return Decision {
                 language: Language::English,
                 confidence: CAPITALISED_ENGLISH_CONFIDENCE,
@@ -409,16 +422,18 @@ impl DecisionEngine for HeuristicEngine {
         let e = self.english_score(keys, known);
 
         // Without Korean its tables are never touched (its pack may not be installed).
-        let (k, known_korean) = if self.korean_on {
-            self.korean_score(
-                keys,
-                context.partial,
-                context.previous_language.map(Language::sentence_language)
-                    == Some(Language::Korean),
-            )
-        } else {
-            (None, false)
-        };
+        let (k, known_korean) = overlap_score.unwrap_or_else(|| {
+            if self.korean_on {
+                self.korean_score(
+                    keys,
+                    context.partial,
+                    context.previous_language.map(Language::sentence_language)
+                        == Some(Language::Korean),
+                )
+            } else {
+                (None, false)
+            }
+        });
 
         let count = keys.chars().count() as f64;
         // A dictionary English word may already be complete: score its Japanese reading as
@@ -426,6 +441,8 @@ impl DecisionEngine for HeuristicEngine {
         #[cfg(feature = "japanese")]
         let j = self
             .japanese
+            // Korean Shift evidence must not unlock an unrelated Japanese reading.
+            .filter(|_| !capitalized_english)
             .and_then(|model| model.score(keys, context.partial && !known));
         // English words inside a Japanese phrase (googlede…) score as segmented Japanese,
         // not as kana with stray letters.

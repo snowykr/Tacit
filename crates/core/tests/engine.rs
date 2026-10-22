@@ -47,6 +47,84 @@ fn english_words_stay_english() {
 }
 
 #[test]
+fn shift_overlap_preserves_korean_and_english_case() {
+    for japanese in std::iter::once(false).chain(cfg!(feature = "embedded-ja").then_some(true)) {
+        let engine = make_engine(None, &Languages::legacy(japanese));
+        for partial in [true, false] {
+            let context = DecisionContext { partial, ..ctx() };
+            for (keys, expected) in [
+                ("akfgkfRk", "말할까"),
+                ("akfgkfRK", "말할까"),
+                ("dlfWlr", "일찍"),
+                ("dlfWLr", "일찍"),
+                ("skfTL", "날씨"),
+                ("Hello", "Hello"),
+                ("API", "API"),
+                ("isValid", "isValid"),
+                ("getURL", "getURL"),
+                ("WORK", "WORK"),
+                ("RK", "RK"),
+                ("RKind", "RKind"),
+                ("turnsRI", "turnsRI"),
+                ("turnsWL", "turnsWL"),
+                ("yukiRI", "yukiRI"),
+            ] {
+                let decision = engine.decide(keys, &context);
+                assert_eq!(
+                    decision.output, expected,
+                    "keys={keys}, japanese={japanese}, partial={partial}: {}",
+                    decision.explanation,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shift_overlap_does_not_enable_disabled_korean() {
+    for japanese in std::iter::once(false).chain(cfg!(feature = "embedded-ja").then_some(true)) {
+        let ids: &[&str] = if japanese { &["en", "ja"] } else { &["en"] };
+        let engine = make_engine(None, &Languages::from_ids(ids).unwrap());
+        for keys in ["akfgkfRK", "dlfWLr"] {
+            let decision = engine.decide(keys, &ctx());
+            assert_eq!(decision.language, Language::English);
+            assert_eq!(decision.output, keys);
+        }
+    }
+}
+
+#[test]
+fn shifted_word_respects_persisted_corrections() {
+    let path = temp_lexicon("shift-corrections");
+    for language in [Language::English, Language::Korean] {
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "learned": {"dlfWLr": language},
+                "once": {},
+                "shapes": {"capital:english": 4, "capital:korean": 3},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let engine = make_engine(Some(path.clone()), &Languages::legacy(false));
+        for partial in [true, false] {
+            let decision = engine.decide("dlfWLr", &DecisionContext { partial, ..ctx() });
+            assert_eq!(decision.language, language);
+            assert_eq!(
+                decision.output,
+                if language == Language::English {
+                    "dlfWLr"
+                } else {
+                    "일찍"
+                },
+            );
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn korean_keystrokes_become_hangul() {
     let e = heuristic();
     for (keys, expected) in [

@@ -118,10 +118,34 @@ impl DubeolsikLayout {
         })
     }
 
-    /// Keys whose shifted form produces a different jamo. Shift on any other letter
-    /// is a signal the user is typing English.
+    /// Keys whose shifted form produces a different jamo.
     pub fn is_korean_shift_key(key: char) -> bool {
         Self::shifted(key).is_some()
+    }
+
+    /// Capitals not explained by Korean Shift keys or a following unchanged vowel.
+    /// This only permits language scoring; it does not choose Korean or change keys.
+    pub(crate) fn has_unexplained_capital(keys: &str) -> bool {
+        let mut after_shifted_consonant = false;
+        let mut overlap = false;
+        let mut lowercase = false;
+        for key in keys.chars() {
+            if key.is_uppercase() && !Self::is_korean_shift_key(key) {
+                if !after_shifted_consonant
+                    || !matches!(
+                        key,
+                        'Y' | 'U' | 'I' | 'H' | 'J' | 'K' | 'L' | 'B' | 'N' | 'M'
+                    )
+                {
+                    return true;
+                }
+                overlap = true;
+            }
+            lowercase |= key.is_ascii_lowercase();
+            after_shifted_consonant = matches!(key, 'Q' | 'W' | 'E' | 'R' | 'T');
+        }
+        // All-capital sequences such as RK remain English evidence.
+        overlap && !lowercase
     }
 
     /// The jamo a key produces, or None for non-letters. Uppercase letters without a
@@ -374,6 +398,27 @@ mod tests {
         let r = HangulComposer::compose("dkE").unwrap();
         assert_eq!(r.text(), "아ㄸ");
         assert!(r.ends_with_pending_consonant());
+    }
+
+    #[test]
+    fn shift_overlap_requires_one_adjacent_unchanged_vowel() {
+        for (keys, unexplained) in [
+            ("dlfWLr", false),
+            ("akfgkfRK", false),
+            ("aRKaWL", false),
+            ("aRHK", true),
+            ("aRkK", true),
+            ("aOK", true),
+            ("aPK", true),
+            ("aRC", true),
+            ("RK", true),
+        ] {
+            assert_eq!(
+                DubeolsikLayout::has_unexplained_capital(keys),
+                unexplained,
+                "{keys}"
+            );
+        }
     }
 
     #[test]

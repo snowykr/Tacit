@@ -9,6 +9,10 @@ Korean version: [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- A Shift release overlapping the next unchanged Korean vowel no longer forces a recognized Korean word into raw English. The decision requires existing Korean word evidence, preserves original English capitalization and explicit learning, and does not enable an unrelated Japanese reading.
+
 ## [0.10.8] - 2026-10-22
 
 ### Added

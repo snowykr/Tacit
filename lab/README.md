@@ -1,5 +1,85 @@
 # 성능 측정 lab
 
+## Shift-overlap exact-output evaluation (issue 12)
+
+This is production-engine evaluation infrastructure, not an alternative algorithm. Build the
+unchanged core and archive both splits **before** changing it; keep the same lab sources for
+both binaries, including the same session oracle and intersecting English controls. Regenerate
+both snapshots if the evaluator changes; do not compare snapshots from different evaluators.
+No `LAB_ENKO*` environment variable may be set (even to an empty value).
+
+```sh
+cargo build --release --manifest-path lab/Cargo.toml
+mkdir -p temp/shift
+lab/target/release/tacit-lab --profile enko --shift-overlap --shift-split dev > temp/shift/base-dev.tsv
+lab/target/release/tacit-lab --profile enko --shift-overlap --shift-split holdout > temp/shift/base-holdout.tsv
+# After rebuilding the candidate core with the SAME lab sources:
+lab/target/release/tacit-lab --profile enko --shift-overlap --shift-split dev > temp/shift/candidate-dev.tsv
+lab/target/release/tacit-lab --profile enko --shift-overlap --shift-split holdout > temp/shift/candidate-holdout.tsv
+python3 lab/compare_shift.py temp/shift/base-dev.tsv temp/shift/candidate-dev.tsv --json temp/shift/dev.json
+python3 lab/compare_shift.py temp/shift/base-holdout.tsv temp/shift/candidate-holdout.tsv --json temp/shift/holdout.json
+# Focused infrastructure checks:
+cargo test --manifest-path lab/Cargo.toml shift_overlap::tests
+python3 lab/compare_shift.py --selftest
+```
+
+`--shift-split` defaults to `dev`; `all` emits both partitions, never an additional sample.
+Repeat with `--profile enkoja` and distinct filenames for Japanese-enabled protection.
+Stdout is TSV only, with a header. Text escapes are `\\\\`, `\\t`, `\\n`, `\\r`;
+use the comparator's decoder, not a generic TSV reader that silently transforms escapes.
+IDs length-frame profile, canonical group, previous language, bucket and exact keys. The
+comparator rejects empty files, duplicates, missing IDs, changed contracts and invalid escapes.
+It prints exact row/group/split counts, per-bucket per-surface denominators and wrong counts,
+**every** changed output, and good-preview/bad-commit transitions; nothing is top-N truncated.
+Exit 1 means at least one formerly correct surface became wrong; exit 2 means invalid inputs.
+Existing wrong-to-wrong changes are listed but do not fail. JSON includes both file SHA-256s.
+Archive build revisions/binaries alongside these files: TSV hashes identify outputs, not binaries.
+
+Data is bounded by existing `word_cases()` sampling (up to 2,000 per generated list), the
+2,000-word English sample, alphabetic terms, and finite per-word case/shift variants. Existing
+handwritten mixed labels and previous-language contexts are retained. English controls include
+raw, TitleCase, UPPERCASE, camelCase and PascalCase with acronym components; all expect exact
+raw keys. Additional `{word}RI`, `{word}WL`, and `RKey{Title}` identifiers deliberately
+intersect the Shift-overlap eligibility pattern rather than being rejected by an earlier capital.
+The development candidate's production selection requires Korean lexical and sequence evidence;
+Shift-overlap eligibility does not authorize Japanese selection. This describes the candidate
+contract, not a final heldout result. Keep holdout sealed during development selection.
+Korean augmentation uppercases only an immediately following non-meaningful vowel
+after `QWERTOP`, and accepts it only when Hangul composition equals the known Korean label.
+Meaningful `O/P` are neither lowercased nor treated as equivalent to `o/p`. Each original and
+its variants stay in one pre-augmentation canonical group. Duplicate source rows with identical
+identity/label collapse; conflicting labels fail rather than disappearing.
+
+Grouping lowercases the **original keys for grouping only**, never the replayed input. Fold 0
+of the existing stable `group_fold` is holdout. The original groups of `akfgkfRk/akfgkfRK`
+and `dlfWlr/dlfWLr` are forcibly dev-only, including any occurrences in source lists.
+This is key-group separation, not independent sources, morphology or dictionary training:
+existing dictionaries may already know heldout words, and independently sourced identifiers
+can share components. Do not tune repeatedly on holdout or call it unseen-language accuracy.
+Exact dataset counts are emitted by comparison (including comparing a baseline to itself),
+not hard-coded estimates that can drift with dictionary updates.
+
+Rows with `scope=decision` exercise the recorded previous language in partial and final
+`decide` calls only; session columns are empty and not scored. Rows with
+`scope=decision+session` have **no previous-language context**, and replay fresh InputSessions
+against FakeTextField separately for Enter and Space with `return_confirms_only=true`.
+The fake host inserts the original character or delimiter only when the session does not handle
+it, so Space is inserted exactly once; expected outputs are never injected into replay.
+`mark` is the actual last marked range;
+`enter` and `space` are actual full field contents. Mark/Enter expect the labeled token;
+Space expects that token plus one ASCII space. This intentionally exposes commit-boundary
+regressions rather than substituting decision predictions for session output. Japanese fixture
+readings are reused as after-Japanese **decision-only** controls in enkoja. All 60 nonmixed
+reading fixtures are included before split filtering. Mixed Latin/kana conversion fixtures lack
+a single romaji reading and are explicitly excluded here, not silently relabeled. Those mixed
+fixtures, Kanji ranking and Japanese Space-to-open-conversion behavior remain covered by the
+existing Japanese evaluation.
+
+Only embedded/public repository fixtures are used, with `make_engine(None, &languages)`:
+no personal learning file, history, installed app, private text or physical keyboard capture.
+FakeTextField replay makes no physical Shift-event or OS integration claim. There are no timing
+hot loops here; use the existing performance/session lab for performance measurements.
+
 ## 공통 후보 선택기·실제 세션 전환 실험
 
 ```powershell

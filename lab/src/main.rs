@@ -19,6 +19,7 @@ mod learned;
 mod ranker;
 mod scenario;
 mod session_perf;
+mod shift_overlap;
 mod switching;
 mod tune;
 
@@ -433,6 +434,10 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(2);
     });
+    if args.iter().any(|a| a == "--shift-overlap") {
+        shift_overlap::run(&args, profile, &Languages::legacy(profile == "enkoja"));
+        return;
+    }
     if std::env::var_os("LAB_ENKO_FULL_SEARCH").is_some() {
         assert!(
             profile == "enko"
