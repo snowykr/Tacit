@@ -32,6 +32,8 @@ def unescape(value):
 
 def load(path):
     raw = Path(path).read_bytes()
+    if b'\r' in raw:
+        raise ValueError(f'{path}: carriage returns must be escaped')
     lines = raw.decode('utf-8').split('\n')
     if lines and lines[-1] == '':
         lines.pop()
@@ -45,6 +47,14 @@ def load(path):
         row = dict(zip(FIELDS, map(unescape, values)))
         if not row['id'] or row['id'] in rows:
             raise ValueError(f'{path}:{number}: missing/duplicate ID {row["id"]!r}')
+        if row['profile'] not in ('enko', 'enkoja'):
+            raise ValueError(f'{path}:{number}: invalid profile')
+        if row['previous'] not in ('-', 'english', 'korean', 'mixed', 'japanese'):
+            raise ValueError(f'{path}:{number}: invalid previous language')
+        identity = ''.join(f'{len(row[field].encode("utf-8"))}:{row[field]}'
+                           for field in ('profile', 'group', 'previous', 'bucket', 'keys'))
+        if row['id'] != identity:
+            raise ValueError(f'{path}:{number}: ID does not match row fields')
         if row['split'] not in ('dev', 'holdout') or row['scope'] not in ('decision', 'decision+session'):
             raise ValueError(f'{path}:{number}: invalid split/scope')
         if row['scope'] == 'decision' and any(row[s] for s in SURFACES[2:]):
@@ -127,11 +137,11 @@ class ComparatorTests(unittest.TestCase):
     def fixture(self, path, rows):
         def escape(s):
             return s.replace('\\', '\\\\').replace('\t', '\\t').replace('\n', '\\n').replace('\r', '\\r')
-        path.write_text('\t'.join(FIELDS) + '\n' + ''.join(
-            '\t'.join(escape(row[f]) for f in FIELDS) + '\n' for row in rows), encoding='utf-8')
+        path.write_bytes(('\t'.join(FIELDS) + '\n' + ''.join(
+            '\t'.join(escape(row[f]) for f in FIELDS) + '\n' for row in rows)).encode('utf-8'))
 
     def row(self):
-        return dict(zip(FIELDS, ['one', 'enko', 'dev', 'word', 'en.raw', 'word', 'word', '-',
+        return dict(zip(FIELDS, ['4:enko4:word1:-6:en.raw4:word', 'enko', 'dev', 'word', 'en.raw', 'word', 'word', '-',
                                 'decision+session', 'word', 'word', 'word', 'word', 'word ']))
 
     def test_regression_and_improvement_on_every_surface(self):
@@ -152,10 +162,42 @@ class ComparatorTests(unittest.TestCase):
             a, b = Path(directory) / 'a.tsv', Path(directory) / 'b.tsv'
             row = self.row()
             self.fixture(a, [row])
-            for rows in ([], [row, row], [dict(row, id='other')], [dict(row, expected='different')]):
+            for rows in ([], [row, row],
+                         [dict(row, keys='other', id='4:enko4:word1:-6:en.raw5:other')],
+                         [dict(row, expected='different')]):
                 self.fixture(b, rows)
                 with self.assertRaises(ValueError):
                     compare(a, b)
+
+    def test_identical_malformed_snapshots_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'invalid.tsv'
+            for changes in (
+                {'profile': 'unsupported', 'id': '11:unsupported4:word1:-6:en.raw4:word'},
+                {'previous': 'not-a-language', 'scope': 'decision',
+                 'id': '4:enko4:word14:not-a-language6:en.raw4:word',
+                 'mark': '', 'enter': '', 'space': ''},
+                {'id': 'arbitrary'},
+            ):
+                with self.subTest(changes=changes):
+                    self.fixture(path, [dict(self.row(), **changes)])
+                    with self.assertRaises(ValueError):
+                        compare(path, path)
+            self.fixture(path, [self.row()])
+            path.write_bytes(path.read_bytes().replace(b'word ', b'word\r '))
+            with self.assertRaises(ValueError):
+                compare(path, path)
+
+    def test_identity_uses_utf8_byte_lengths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'unicode.tsv'
+            row = dict(self.row(), group='한', id='4:enko3:한1:-6:en.raw4:word')
+            self.fixture(path, [row])
+            self.assertEqual(compare(path, path)['rows'], 1)
+            row['id'] = '4:enko1:한1:-6:en.raw4:word'
+            self.fixture(path, [row])
+            with self.assertRaises(ValueError):
+                compare(path, path)
 
     def test_escape_validation(self):
         for invalid in ('\\', '\\x'):

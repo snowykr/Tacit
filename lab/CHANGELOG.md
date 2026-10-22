@@ -8,6 +8,13 @@ else (a new metric, a flag, a fix). A baseline records the lab version it was ma
 
 ## Unreleased
 
+### Fixed
+
+- Shift snapshot comparison rejects unsupported profile/previous-language values, inconsistent
+  UTF-8-framed IDs and unescaped carriage returns even when both inputs share the same defect.
+  Valid snapshot outputs and metric definitions are unchanged. Pairwise comparison still needs
+  archived provenance and denominators to detect identical omissions from both inputs.
+
 ### Added
 
 - Production-only `--shift-overlap --shift-split dev|holdout|all` TSV snapshots with

@@ -28,12 +28,17 @@ Repeat with `--profile enkoja` and distinct filenames for Japanese-enabled prote
 Stdout is TSV only, with a header. Text escapes are `\\\\`, `\\t`, `\\n`, `\\r`;
 use the comparator's decoder, not a generic TSV reader that silently transforms escapes.
 IDs length-frame profile, canonical group, previous language, bucket and exact keys. The
-comparator rejects empty files, duplicates, missing IDs, changed contracts and invalid escapes.
+comparator rejects empty files, duplicates, missing IDs, changed contracts, unsupported
+profile/previous-language values, IDs inconsistent with UTF-8 byte-length framing, invalid
+escapes and unescaped carriage returns. Generated TSV uses LF, not CRLF.
 It prints exact row/group/split counts, per-bucket per-surface denominators and wrong counts,
 **every** changed output, and good-preview/bad-commit transitions; nothing is top-N truncated.
 Exit 1 means at least one formerly correct surface became wrong; exit 2 means invalid inputs.
 Existing wrong-to-wrong changes are listed but do not fail. JSON includes both file SHA-256s.
 Archive build revisions/binaries alongside these files: TSV hashes identify outputs, not binaries.
+Pairwise validation cannot detect rows omitted identically from both files or prove the group's
+partition was generated correctly. Retain the original snapshot hashes, generator identity and
+expected denominators; comparator success alone is not a dataset-completeness check.
 
 Data is bounded by existing `word_cases()` sampling (up to 2,000 per generated list), the
 2,000-word English sample, alphabetic terms, and finite per-word case/shift variants. Existing
